@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-real-estate-voice-agent-demo",
   "version": "1.0.0",
-  "description": "Demo real-estate WhatsApp voice agent for property discovery and site visit scheduling.",
+  "description": "Demo real-estate WhatsApp voice agent for property discovery and site visit scheduling with Vapi voice and Elevenlabs TTS.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,12 +11,14 @@
     "whatsapp",
     "real-estate",
     "voice-agent",
-    "demo",
-    "twilio"
+    "vapi",
+    "elevenlabs",
+    "demo"
   ],
   "author": "Copilot",
   "license": "MIT",
   "dependencies": {
+    "axios": "^1.6.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",

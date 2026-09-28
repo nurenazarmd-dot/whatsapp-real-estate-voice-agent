@@ -1,119 +1,170 @@
-require('dotenv').config();
-const express = require('express');
-const multer = require('multer');
-const twilio = require('twilio');
-const {
-  findMatchingProperties,
-  generateAgentReply,
-  extractRequestDetails,
-  getAiEnhancedReply
-} = require('./src/realEstateAgent');
+const properties = require('./data/properties');
+const OpenAI = require('openai');
+const VoiceAgent = require('./voiceAgent');
 
-const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
-const PORT = process.env.PORT || 3000;
-const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
-  ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
-  : null;
+const openaiClient = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const voiceAgent = new VoiceAgent();
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+function normalizeCity(value) {
+  if (!value) return '';
+  const lower = value.toLowerCase();
 
-app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
-    service: 'WhatsApp Real Estate Voice Agent Demo',
-    status: 'running',
-    readyForTwilio: !!twilioClient,
-    openAiConfigured: !!process.env.OPENAI_API_KEY
+  if (lower.includes('gurgaon') || lower.includes('gurugram')) return 'Gurgaon';
+  if (lower.includes('noida')) return 'Noida';
+  if (lower.includes('delhi')) return 'Delhi';
+  if (lower.includes('mumbai')) return 'Mumbai';
+  if (lower.includes('bangalore') || lower.includes('bengaluru')) return 'Bangalore';
+  return value.trim();
+}
+
+function extractBudget(message) {
+  if (!message) return null;
+  const lower = message.toLowerCase();
+  const budgetMatches = lower.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(lakh|lac|crore|cr|rupees|rs|rs\.)/g);
+  if (!budgetMatches || budgetMatches.length === 0) return null;
+
+  const match = budgetMatches[0];
+  const numberMatch = match.match(/\d+(?:,\d+)*(?:\.\d+)?/);
+  if (!numberMatch) return null;
+
+  const value = Number(numberMatch[0].replace(/,/g, ''));
+  const unit = match.toLowerCase().includes('crore') || match.toLowerCase().includes('cr') ? 'crore' : 'lakh';
+
+  if (unit === 'crore') return value * 10000000;
+  return value * 100000;
+}
+
+function extractBhk(message) {
+  if (!message) return null;
+  const lower = message.toLowerCase();
+  const result = lower.match(/(1|2|3|4)\s*\+?\s*bhk|bhk\s*(1|2|3|4)/i);
+  if (!result) return null;
+  const bhk = result[1] || result[2];
+  return Number(bhk);
+}
+
+function extractRequestDetails(message = '') {
+  const cleaned = String(message || '').trim();
+  const cityMatch = (cleaned.match(/(gurgaon|gurugram|noida|delhi|mumbai|bangalore|bengaluru)/i) || [])[0] || '';
+
+  return {
+    originalMessage: cleaned,
+    city: normalizeCity(cityMatch),
+    budget: extractBudget(cleaned),
+    bhk: extractBhk(cleaned),
+    intent: cleaned.toLowerCase().includes('site') || cleaned.toLowerCase().includes('visit') ? 'site_visit' : 'property_search'
+  };
+}
+
+function findMatchingProperties(criteria = {}) {
+  const city = criteria.city || '';
+  const bhk = criteria.bhk || null;
+  const budget = criteria.budget || null;
+
+  return properties.filter((property) => {
+    const cityMatches = !city || property.city.toLowerCase() === city.toLowerCase();
+    const bhkMatches = !bhk || property.bhk === bhk || property.bhk >= bhk;
+    const budgetMatches = !budget || property.price <= budget;
+    return cityMatches && bhkMatches && budgetMatches;
   });
-});
+}
 
-app.get('/demo/config', (req, res) => {
-  res.json({
-    twilioConfigured: !!twilioClient,
-    whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER || null,
-    openAiConfigured: !!process.env.OPENAI_API_KEY,
-    model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
-  });
-});
+function generateAgentReply(criteria, propertiesList) {
+  const city = criteria.city || 'your preferred city';
+  const bhk = criteria.bhk || 'desired';
+  const budget = criteria.budget ? `₹${(criteria.budget / 100000).toFixed(0)} Lakh` : 'your budget';
 
-app.get('/demo/properties', (req, res) => {
-  const props = require('./src/data/properties');
-  res.json({ count: props.length, properties: props });
-});
-
-app.post('/demo/message', async (req, res) => {
-  const rawMessage = req.body.message || req.body.text || '';
-  const parsed = extractRequestDetails(rawMessage);
-  const properties = findMatchingProperties(parsed);
-  const reply = await getAiEnhancedReply(parsed, properties, rawMessage);
-
-  res.json({
-    ok: true,
-    input: rawMessage,
-    parsed,
-    propertyCount: properties.length,
-    reply
-  });
-});
-
-app.post('/demo/voice', upload.single('audio'), async (req, res) => {
-  const { message } = req.body;
-  const rawMessage = message || 'Voice note received. Please share city, budget and BHK preference.';
-  const parsed = extractRequestDetails(rawMessage);
-  const properties = findMatchingProperties(parsed);
-  const reply = await getAiEnhancedReply(parsed, properties, rawMessage);
-
-  res.json({
-    ok: true,
-    note: 'Voice note received successfully',
-    parsed,
-    propertyCount: properties.length,
-    reply,
-    fileReceived: !!req.file
-  });
-});
-
-app.post('/webhook/whatsapp', async (req, res) => {
-  const text = req.body.Body || req.body.message || req.body.text || '';
-  const parsed = extractRequestDetails(text);
-  const properties = findMatchingProperties(parsed);
-  const reply = await getAiEnhancedReply(parsed, properties, text);
-
-  if (req.body.From) {
-    if (twilioClient && process.env.TWILIO_WHATSAPP_NUMBER) {
-      const toNumber = req.body.From.startsWith('whatsapp:') ? req.body.From : `whatsapp:${req.body.From}`;
-      const fromNumber = process.env.TWILIO_WHATSAPP_NUMBER.startsWith('whatsapp:')
-        ? process.env.TWILIO_WHATSAPP_NUMBER
-        : `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
-
-      try {
-        await twilioClient.messages.create({
-          from: fromNumber,
-          to: toNumber,
-          body: reply.substring(0, 1500)
-        });
-      } catch (error) {
-        console.error('Twilio send failed:', error.message);
-      }
-    }
-
-    return res.status(200).send('<Response></Response>');
+  if (!propertiesList || propertiesList.length === 0) {
+    return `Mujhe ${city} mein ${bhk} BHK nahi mila ${budget} ke budget mein. Kya aap budget increase kar sakte ho ya dusre city check karna chahenge?`;
   }
 
-  res.json({ ok: true, reply, parsed, propertyCount: properties.length });
-});
+  const topItems = propertiesList.slice(0, 3).map((item) => {
+    return `${item.title} (${item.priceLabel}) in ${item.area}`;
+  }).join('. ');
 
-app.post('/webhook/voice', upload.single('audio'), async (req, res) => {
-  const text = req.body.text || req.body.message || 'Voice note received. Kindly provide city, budget and room requirement.';
-  const parsed = extractRequestDetails(text);
-  const properties = findMatchingProperties(parsed);
-  const reply = await getAiEnhancedReply(parsed, properties, text);
+  return `Mujhe ${city} mein ${bhk} BHK ke ${propertiesList.length} options mile hain aapke ${budget} budget mein. Options: ${topItems}. Kya aap inhe dekhna chahenge ya kisi specific property ke baare mein jaankari chahte ho?`;
+}
 
-  res.json({ ok: true, reply, parsed, propertyCount: properties.length });
-});
+async function getAiEnhancedReply(criteria, propertiesList, rawMessage = '') {
+  if (!openaiClient) {
+    return generateAgentReply(criteria, propertiesList);
+  }
 
-app.listen(PORT, () => {
-  console.log(`Real estate WhatsApp voice demo running on http://localhost:${PORT}`);
-});
+  try {
+    const propertySummary = (propertiesList || []).slice(0, 3).map((item) => {
+      return `${item.title} (${item.priceLabel}) in ${item.area}. Amenities: ${item.amenities.join(', ')}`;
+    }).join('; ');
+
+    const response = await openaiClient.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a helpful real-estate WhatsApp assistant. Reply in Hinglish only (Hindi mixed with English). Keep replies short and friendly. Suggest only the provided property options. Never invent new properties.'
+        },
+        {
+          role: 'user',
+          content: `Customer message: "${rawMessage || 'Property search'}". Match details: city=${criteria.city || 'any'}, bhk=${criteria.bhk || 'any'}, budget=${criteria.budget ? `₹${(criteria.budget / 100000).toFixed(0)} Lakh` : 'not specified'}. Available properties: ${propertySummary || 'No matching properties found'}. Provide friendly recommendation in Hinglish.`
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 300
+    });
+
+    const result = response.choices?.[0]?.message?.content?.trim();
+    if (result) return result;
+    return generateAgentReply(criteria, propertiesList);
+  } catch (error) {
+    console.error('OpenAI request failed, falling back to local reply:', error.message);
+    return generateAgentReply(criteria, propertiesList);
+  }
+}
+
+async function processVoiceMessage(audioFilePath, phoneNumber = null) {
+  let transcribedText = null;
+
+  if (openaiClient) {
+    transcribedText = await voiceAgent.transcribeAudio(audioFilePath);
+  }
+
+  if (!transcribedText) {
+    return {
+      ok: false,
+      error: 'Audio transcription failed',
+      suggestion: 'Please configure OpenAI API key for voice transcription'
+    };
+  }
+
+  const parsed = extractRequestDetails(transcribedText);
+  const foundProperties = findMatchingProperties(parsed);
+  const reply = await getAiEnhancedReply(parsed, foundProperties, transcribedText);
+
+  const result = {
+    ok: true,
+    transcribedText,
+    parsed,
+    propertyCount: foundProperties.length,
+    properties: foundProperties.slice(0, 3),
+    reply
+  };
+
+  if (phoneNumber && process.env.VAPI_API_KEY && process.env.VAPI_ASSISTANT_ID) {
+    const vapiCall = await voiceAgent.initiateVapiCall(phoneNumber, foundProperties);
+    if (vapiCall) {
+      result.voiceCallInitiated = true;
+      result.callDetails = vapiCall;
+    }
+  }
+
+  return result;
+}
+
+module.exports = {
+  properties,
+  extractRequestDetails,
+  findMatchingProperties,
+  generateAgentReply,
+  getAiEnhancedReply,
+  processVoiceMessage,
+  voiceAgent
+};
