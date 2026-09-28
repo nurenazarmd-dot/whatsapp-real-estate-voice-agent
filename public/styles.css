@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real Estate Voice Agent Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Sales Command Center</p>
+          <h1>Real Estate Voice Agent</h1>
+        </div>
+        <button id="refreshBtn">Refresh</button>
+      </header>
+
+      <section class="stats-grid">
+        <div class="stat-card">
+          <span>Total Properties</span>
+          <strong id="totalProperties">0</strong>
+        </div>
+        <div class="stat-card">
+          <span>Total Leads</span>
+          <strong id="totalLeads">0</strong>
+        </div>
+        <div class="stat-card">
+          <span>Fresh Leads</span>
+          <strong id="freshLeads">0</strong>
+        </div>
+        <div class="stat-card">
+          <span>Follow Up</span>
+          <strong id="followUpLeads">0</strong>
+        </div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-header">
+          <h2>Property Board</h2>
+        </div>
+        <div id="propertyGrid" class="property-grid"></div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-header">
+          <h2>Lead Pipeline</h2>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>City</th>
+              <th>Budget</th>
+              <th>BHK</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="leadTableBody"></tbody>
+        </table>
+      </section>
+
+      <section class="section-block form-block">
+        <div class="section-header">
+          <h2>Capture New Lead</h2>
+        </div>
+        <form id="leadForm">
+          <div class="form-grid">
+            <input type="text" name="customerName" placeholder="Customer name" required />
+            <input type="text" name="phone" placeholder="Phone number" required />
+            <input type="text" name="city" placeholder="City" />
+            <input type="text" name="budget" placeholder="Budget" />
+            <input type="text" name="bhk" placeholder="BHK" />
+            <select name="status">
+              <option value="new">New</option>
+              <option value="follow-up">Follow Up</option>
+              <option value="site-visit">Site Visit</option>
+              <option value="closed">Closed</option>
+            </select>
+          </div>
+          <button type="submit">Save Lead</button>
+        </form>
+      </section>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
