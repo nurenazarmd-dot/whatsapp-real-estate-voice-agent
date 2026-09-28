@@ -1,86 +1,119 @@
-const properties = require('./data/properties');
+require('dotenv').config();
+const express = require('express');
+const multer = require('multer');
+const twilio = require('twilio');
+const {
+  findMatchingProperties,
+  generateAgentReply,
+  extractRequestDetails,
+  getAiEnhancedReply
+} = require('./src/realEstateAgent');
 
-function normalizeCity(value) {
-  if (!value) return '';
-  const lower = value.toLowerCase();
+const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
+const PORT = process.env.PORT || 3000;
+const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
+  ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+  : null;
 
-  if (lower.includes('gurgaon') || lower.includes('gurugram')) return 'Gurgaon';
-  if (lower.includes('noida')) return 'Noida';
-  if (lower.includes('delhi')) return 'Delhi';
-  if (lower.includes('mumbai')) return 'Mumbai';
-  if (lower.includes('bangalore') || lower.includes('bengaluru')) return 'Bangalore';
-  return value.trim();
-}
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-function extractBudget(message) {
-  if (!message) return null;
-  const lower = message.toLowerCase();
-  const budgetMatches = lower.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(lakh|lac|crore|cr|rupees|rs|rs\.)/g);
-  if (!budgetMatches || budgetMatches.length === 0) return null;
-
-  const match = budgetMatches[0];
-  const numberMatch = match.match(/\d+(?:,\d+)*(?:\.\d+)?/);
-  if (!numberMatch) return null;
-
-  const value = Number(numberMatch[0].replace(/,/g, ''));
-  const unit = match.toLowerCase().includes('crore') || match.toLowerCase().includes('cr') ? 'crore' : 'lakh';
-
-  if (unit === 'crore') return value * 10000000;
-  return value * 100000;
-}
-
-function extractBhk(message) {
-  if (!message) return null;
-  const lower = message.toLowerCase();
-  const result = lower.match(/(1|2|3|4)\s*\+?\s*bhk|bhk\s*(1|2|3|4)/i);
-  if (!result) return null;
-  const bhk = result[1] || result[2];
-  return Number(bhk);
-}
-
-function extractRequestDetails(message = '') {
-  const cleaned = String(message || '').trim();
-  return {
-    originalMessage: cleaned,
-    city: normalizeCity((cleaned.match(/(gurgaon|gurugram|noida|delhi|mumbai|bangalore|bengaluru)/i) || [])[0] || ''),
-    budget: extractBudget(cleaned),
-    bhk: extractBhk(cleaned),
-    intent: cleaned.toLowerCase().includes('site') || cleaned.toLowerCase().includes('visit') ? 'site_visit' : 'property_search'
-  };
-}
-
-function findMatchingProperties(criteria = {}) {
-  const city = criteria.city || '';
-  const bhk = criteria.bhk || null;
-  const budget = criteria.budget || null;
-
-  return properties.filter((property) => {
-    const cityMatches = !city || property.city.toLowerCase() === city.toLowerCase();
-    const bhkMatches = !bhk || property.bhk === bhk || property.bhk >= bhk;
-    const budgetMatches = !budget || property.price <= budget;
-    return cityMatches && bhkMatches && budgetMatches;
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'WhatsApp Real Estate Voice Agent Demo',
+    status: 'running',
+    readyForTwilio: !!twilioClient,
+    openAiConfigured: !!process.env.OPENAI_API_KEY
   });
-}
+});
 
-function generateAgentReply(criteria, propertiesList) {
-  const city = criteria.city || 'your preferred city';
-  const bhk = criteria.bhk || 'desired';
-  const budget = criteria.budget ? `₹${(criteria.budget / 100000).toFixed(0)} Lakh` : 'your budget';
+app.get('/demo/config', (req, res) => {
+  res.json({
+    twilioConfigured: !!twilioClient,
+    whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER || null,
+    openAiConfigured: !!process.env.OPENAI_API_KEY,
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
+  });
+});
 
-  if (!propertiesList || propertiesList.length === 0) {
-    return `I found no exact property matching ${city}, ${bhk} BHK and budget ${budget}. I can suggest nearby options or increase the budget range. Would you like me to show affordable alternatives or schedule a site visit?`;
+app.get('/demo/properties', (req, res) => {
+  const props = require('./src/data/properties');
+  res.json({ count: props.length, properties: props });
+});
+
+app.post('/demo/message', async (req, res) => {
+  const rawMessage = req.body.message || req.body.text || '';
+  const parsed = extractRequestDetails(rawMessage);
+  const properties = findMatchingProperties(parsed);
+  const reply = await getAiEnhancedReply(parsed, properties, rawMessage);
+
+  res.json({
+    ok: true,
+    input: rawMessage,
+    parsed,
+    propertyCount: properties.length,
+    reply
+  });
+});
+
+app.post('/demo/voice', upload.single('audio'), async (req, res) => {
+  const { message } = req.body;
+  const rawMessage = message || 'Voice note received. Please share city, budget and BHK preference.';
+  const parsed = extractRequestDetails(rawMessage);
+  const properties = findMatchingProperties(parsed);
+  const reply = await getAiEnhancedReply(parsed, properties, rawMessage);
+
+  res.json({
+    ok: true,
+    note: 'Voice note received successfully',
+    parsed,
+    propertyCount: properties.length,
+    reply,
+    fileReceived: !!req.file
+  });
+});
+
+app.post('/webhook/whatsapp', async (req, res) => {
+  const text = req.body.Body || req.body.message || req.body.text || '';
+  const parsed = extractRequestDetails(text);
+  const properties = findMatchingProperties(parsed);
+  const reply = await getAiEnhancedReply(parsed, properties, text);
+
+  if (req.body.From) {
+    if (twilioClient && process.env.TWILIO_WHATSAPP_NUMBER) {
+      const toNumber = req.body.From.startsWith('whatsapp:') ? req.body.From : `whatsapp:${req.body.From}`;
+      const fromNumber = process.env.TWILIO_WHATSAPP_NUMBER.startsWith('whatsapp:')
+        ? process.env.TWILIO_WHATSAPP_NUMBER
+        : `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
+
+      try {
+        await twilioClient.messages.create({
+          from: fromNumber,
+          to: toNumber,
+          body: reply.substring(0, 1500)
+        });
+      } catch (error) {
+        console.error('Twilio send failed:', error.message);
+      }
+    }
+
+    return res.status(200).send('<Response></Response>');
   }
 
-  const topItems = propertiesList.slice(0, 3).map((item) => {
-    return `${item.title} (${item.priceLabel}) in ${item.area}.`;
-  }).join(' ');
+  res.json({ ok: true, reply, parsed, propertyCount: properties.length });
+});
 
-  return `I found ${propertiesList.length} matching option(s) for ${city} in ${bhk} BHK range with budget ${budget}. ${topItems} Would you like me to share more details, photos, or arrange a site visit?`;
-}
+app.post('/webhook/voice', upload.single('audio'), async (req, res) => {
+  const text = req.body.text || req.body.message || 'Voice note received. Kindly provide city, budget and room requirement.';
+  const parsed = extractRequestDetails(text);
+  const properties = findMatchingProperties(parsed);
+  const reply = await getAiEnhancedReply(parsed, properties, text);
 
-module.exports = {
-  properties,
-  extractRequestDetails,
-  findMatchingProperties,
-  generateAgentReply
-};
+  res.json({ ok: true, reply, parsed, propertyCount: properties.length });
+});
+
+app.listen(PORT, () => {
+  console.log(`Real estate WhatsApp voice demo running on http://localhost:${PORT}`);
+});
