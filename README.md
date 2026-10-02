@@ -5,7 +5,8 @@ Full-featured demo for a real estate WhatsApp voice agent with Vapi voice calls 
 ## Features
 
 ✅ WhatsApp Integration
-- Twilio WhatsApp Sandbox support
+- Meta WhatsApp Cloud API support
+- Twilio compatibility kept for legacy testing
 - Text message flow
 - Voice note transcription
 - Real-time property matching
@@ -56,14 +57,15 @@ npm -v
 cp .env.example .env
 ```
 
-### 2.3 Fill in environment variables
+### 2.3 Add API keys for Meta WhatsApp and AI
 
 ```env
 PORT=3000
 
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_WHATSAPP_NUMBER=
+WHATSAPP_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=
+META_API_VERSION=v19.0
 
 VAPI_API_KEY=
 VAPI_ASSISTANT_ID=
@@ -75,46 +77,19 @@ OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-### 2.4 Install dependencies
-
-```bash
-npm install
-```
-
-### 2.5 Create environment file
-
-```bash
-cp .env.example .env
-```
-
-### 2.6 Add API keys in .env
-
-```env
-PORT=3000
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_WHATSAPP_NUMBER=
-VAPI_API_KEY=
-VAPI_ASSISTANT_ID=
-ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4o-mini
-```
-
-### 2.7 Start the application
+### 2.4 Start the application
 
 ```bash
 npm start
 ```
 
-### 2.8 Open dashboard in browser
+### 2.5 Open dashboard in browser
 
 ```text
 http://localhost:3000/
 ```
 
-### 2.9 Test the property API
+### 2.6 Test the property API
 
 ```bash
 curl -X POST http://localhost:3000/demo/message \
@@ -122,166 +97,98 @@ curl -X POST http://localhost:3000/demo/message \
   -d '{"message":"Mujhe Gurgaon mein 2 BHK chahiye budget 60 lakh"}'
 ```
 
-### 2.10 Lead capture test
+### 2.7 Lead capture test
 
 1. Open the dashboard in browser.
 2. Fill the lead form.
 3. Click the Save Lead button.
 4. Confirm the lead appears in the lead pipeline table.
 
-### 3. Run the app
+## Meta WhatsApp Setup
 
-```bash
-npm start
+### 1. Create Meta app
+
+Visit:
+```text
+https://developers.facebook.com/apps/
 ```
 
-### 4. Health check
+Create a new app and add the **WhatsApp** product.
 
-```bash
-curl http://localhost:3000/health
+### 2. Get WhatsApp Business credentials
+
+From your Meta developer account, get:
+- WhatsApp Business Account ID
+- Phone Number ID
+- Permanent Access Token
+
+Add them to `.env`:
+
+```env
+WHATSAPP_TOKEN=your_access_token
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=your_verify_token
 ```
 
-## API Endpoints
-
-### Health Check
-```bash
-curl http://localhost:3000/health
-```
-
-### Demo Message (Text)
-```bash
-curl -X POST http://localhost:3000/demo/message \
-  -H "Content-Type: application/json" \
-  -d '{"message":"Need 2 BHK in Gurgaon under 60 lakh"}'
-```
-
-### Demo Voice (Audio File)
-```bash
-curl -X POST http://localhost:3000/demo/voice \
-  -F "audio=@audio.mp3" \
-  -F "phoneNumber=+1234567890"
-```
-
-### Voice Message with Vapi Call
-```bash
-curl -X POST http://localhost:3000/demo/voice-text \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Mujhe Noida mein 3 BHK chahiye budget 80 lakh",
-    "phoneNumber": "+1234567890"
-  }'
-```
-
-### Text-to-Speech Demo
-```bash
-curl "http://localhost:3000/demo/tts?text=Mujhe+Gurgaon+mein+2+BHK+chahiye" > output.mp3
-```
-
-### WhatsApp Webhook
-```bash
-curl -X POST http://localhost:3000/webhook/whatsapp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "From": "whatsapp:+1234567890",
-    "Body": "Mujhe 2 BHK in Gurgaon chahiye"
-  }'
-```
-
-### Voice Note Webhook (Twilio)
-```bash
-curl -X POST http://localhost:3000/webhook/voice-note \
-  -F "media=@voice.ogg" \
-  -F "From=whatsapp:+1234567890"
-```
-
-### Vapi Webhook
-```bash
-curl -X POST http://localhost:3000/webhook/vapi \
-  -H "Content-Type: application/json" \
-  -d '{"type":"call.started"}'
-```
-
-## User Flow
-
-### Text Message Flow
-1. User sends: "Mujhe 2 BHK in Gurgaon chahiye budget 60 lakh"
-2. App parses: city=Gurgaon, bhk=2, budget=60 lakh
-3. App finds 1-2 matching properties
-4. App replies with Hinglish property recommendations
-
-### Voice Call Flow (with Vapi)
-1. User calls the Vapi number
-2. Vapi AI answers in Hindi
-3. User speaks their requirement
-4. Vapi transcribes via OpenAI Whisper
-5. App processes request
-6. Vapi reads property recommendations via ElevenLabs TTS
-
-### Voice Note Flow
-1. User sends WhatsApp voice note
-2. Twilio webhooks the audio file
-3. OpenAI Whisper transcribes
-4. App processes request
-5. WhatsApp sends back text reply
-6. Optional: TTS reads it back
-
-## Production Deployment
-
-### Using ngrok for local testing
+### 3. Run ngrok for public webhook access
 
 ```bash
 ngrok http 3000
 ```
 
-Update Twilio webhook to:
-
+Example public URL:
 ```text
-https://your-ngrok-url/webhook/whatsapp
-https://your-ngrok-url/webhook/voice-note
+https://abcd1234.ngrok-free.app
 ```
 
-Update Vapi webhook to:
+### 4. Configure WhatsApp webhook in Meta
 
+Set the webhook URL to:
 ```text
-https://your-ngrok-url/webhook/vapi
+https://abcd1234.ngrok-free.app/webhook/whatsapp
+```
+
+Use verify token from `.env`:
+```text
+WHATSAPP_WEBHOOK_VERIFY_TOKEN
+```
+
+### 5. Test WhatsApp live
+
+Send a message from your WhatsApp Business number:
+```text
+Mujhe Gurgaon mein 2 BHK chahiye budget 60 lakh
+```
+
+Your app will reply through Meta WhatsApp API.
+
+## Voice Note Flow
+
+For voice notes, the same webhook can accept audio and transcribe via Whisper:
+
+```bash
+curl -X POST http://localhost:3000/demo/voice \
+  -F "audio=@voice.mp3" \
+  -F "phoneNumber=+1234567890"
+```
+
+## Health check
+
+```bash
+curl http://localhost:3000/health
 ```
 
 ## Troubleshooting
 
-### No audio transcription?
-- Confirm OpenAI API key is configured.
-- Check file format is valid (MP3, WAV, OGG supported).
+### WhatsApp message not replying?
+- Confirm `WHATSAPP_TOKEN` is valid.
+- Confirm `WHATSAPP_PHONE_NUMBER_ID` is correct.
+- Confirm webhook is public through ngrok.
+- Verify webhook subscription in Meta dashboard.
 
-### Vapi calls not working?
-- Verify VAPI_API_KEY and VAPI_ASSISTANT_ID.
-- Check your webhook URL is public.
-
-### TTS not generating?
-- Confirm ELEVENLABS_API_KEY is valid.
-- Check the text length is not too large.
-
-## File Structure
-
-```text
-.
-├── server.js
-├── package.json
-├── .env.example
-├── README.md
-├── public/
-│   ├── index.html
-│   ├── styles.css
-│   └── app.js
-├── src/
-│   ├── realEstateAgent.js
-│   ├── voiceAgent.js
-│   ├── leadsStore.js
-│   └── data/
-│       └── properties.js
-├── data/
-│   └── leads.json
-└── uploads/
-```
+### Audio not transcribing?
+- Add valid `OPENAI_API_KEY`.
+- Use supported audio format like MP3/WAV/OGG.
 
 ## License
 

@@ -3,31 +3,50 @@ const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const twilio = require('twilio');
 const axios = require('axios');
-const {
-  findMatchingProperties,
-  generateAgentReply,
-  extractRequestDetails,
-  getAiEnhancedReply,
-  processVoiceMessage,
-  voiceAgent
-} = require('./src/realEstateAgent');
+const twilio = require('twilio');
+const { findMatchingProperties, extractRequestDetails, getAiEnhancedReply, processVoiceMessage, voiceAgent } = require('./src/realEstateAgent');
+const { addLead, readLeads } = require('./src/leadsStore');
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 const uploadDisk = multer({ dest: 'uploads/' });
 const PORT = process.env.PORT || 3000;
-const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
-  ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
-  : null;
+const twilioClient = process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN) : null;
 
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
+if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+function getMetaConfig() {
+  return {
+    token: process.env.WHATSAPP_TOKEN,
+    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
+    webhookVerifyToken: process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN,
+    apiVersion: process.env.META_API_VERSION || 'v19.0'
+  };
+}
+
+function sendMetaWhatsAppMessage(to, text) {
+  const { token, phoneNumberId, apiVersion } = getMetaConfig();
+  if (!token || !phoneNumberId) {
+    throw new Error('Meta WhatsApp token or phoneNumberId missing');
+  }
+
+  return axios.post(`https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`, {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: { body: text }
+  }, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    }
+  });
+}
 
 app.get('/health', (req, res) => {
   res.json({
@@ -36,6 +55,7 @@ app.get('/health', (req, res) => {
     status: 'running',
     integrations: {
       twilio: !!twilioClient,
+      metaWhatsApp: !!process.env.WHATSAPP_TOKEN && !!process.env.WHATSAPP_PHONE_NUMBER_ID,
       vapi: !!process.env.VAPI_API_KEY,
       elevenlabs: !!process.env.ELEVENLABS_API_KEY,
       openai: !!process.env.OPENAI_API_KEY
@@ -45,22 +65,11 @@ app.get('/health', (req, res) => {
 
 app.get('/demo/config', (req, res) => {
   res.json({
-    twilio: {
-      configured: !!twilioClient,
-      whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER || null
-    },
-    vapi: {
-      configured: !!process.env.VAPI_API_KEY,
-      assistantId: process.env.VAPI_ASSISTANT_ID || null
-    },
-    elevenlabs: {
-      configured: !!process.env.ELEVENLABS_API_KEY,
-      voiceId: process.env.ELEVENLABS_VOICE_ID || null
-    },
-    openai: {
-      configured: !!process.env.OPENAI_API_KEY,
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini'
-    }
+    twilio: { configured: !!twilioClient, whatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER || null },
+    metaWhatsApp: { configured: !!process.env.WHATSAPP_TOKEN && !!process.env.WHATSAPP_PHONE_NUMBER_ID },
+    vapi: { configured: !!process.env.VAPI_API_KEY, assistantId: process.env.VAPI_ASSISTANT_ID || null },
+    elevenlabs: { configured: !!process.env.ELEVENLABS_API_KEY, voiceId: process.env.ELEVENLABS_VOICE_ID || null },
+    openai: { configured: !!process.env.OPENAI_API_KEY, model: process.env.OPENAI_MODEL || 'gpt-4o-mini' }
   });
 });
 
@@ -69,26 +78,42 @@ app.get('/demo/properties', (req, res) => {
   res.json({ count: props.length, properties: props });
 });
 
+app.get('/api/dashboard', (req, res) => {
+  const properties = require('./src/data/properties');
+  const leads = readLeads();
+  res.json({ totalProperties: properties.length, totalLeads: leads.length, properties, leads: leads.slice(0, 10) });
+});
+
+app.post('/api/leads', (req, res) => {
+  const lead = req.body || {};
+  if (!lead.customerName && !lead.phone) {
+    return res.status(400).json({ ok: false, message: 'Customer name or phone is required.' });
+  }
+
+  const saved = addLead({
+    customerName: lead.customerName || 'Anonymous',
+    phone: lead.phone || 'Not provided',
+    city: lead.city || 'Not specified',
+    budget: lead.budget || 'Not specified',
+    bhk: lead.bhk || 'Not specified',
+    status: lead.status || 'new',
+    source: lead.source || 'dashboard'
+  });
+
+  res.json({ ok: true, lead: saved });
+});
+
 app.post('/demo/message', async (req, res) => {
   const rawMessage = req.body.message || req.body.text || '';
   const parsed = extractRequestDetails(rawMessage);
   const properties = findMatchingProperties(parsed);
   const reply = await getAiEnhancedReply(parsed, properties, rawMessage);
 
-  res.json({
-    ok: true,
-    input: rawMessage,
-    parsed,
-    propertyCount: properties.length,
-    properties: properties.slice(0, 3),
-    reply
-  });
+  res.json({ ok: true, input: rawMessage, parsed, propertyCount: properties.length, properties: properties.slice(0, 3), reply });
 });
 
 app.post('/demo/voice', uploadDisk.single('audio'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ ok: false, error: 'No audio file provided' });
-  }
+  if (!req.file) return res.status(400).json({ ok: false, error: 'No audio file provided' });
 
   const audioPath = req.file.path;
   const phoneNumber = req.body.phoneNumber || null;
@@ -100,9 +125,7 @@ app.post('/demo/voice', uploadDisk.single('audio'), async (req, res) => {
     console.error('Voice processing error:', error);
     res.status(500).json({ ok: false, error: error.message });
   } finally {
-    if (fs.existsSync(audioPath)) {
-      fs.unlinkSync(audioPath);
-    }
+    if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
   }
 });
 
@@ -110,23 +133,14 @@ app.post('/demo/voice-text', async (req, res) => {
   const { message, phoneNumber } = req.body;
   const rawMessage = message || '';
 
-  if (!rawMessage) {
-    return res.status(400).json({ ok: false, error: 'No message provided' });
-  }
+  if (!rawMessage) return res.status(400).json({ ok: false, error: 'No message provided' });
 
   try {
     const parsed = extractRequestDetails(rawMessage);
     const properties = findMatchingProperties(parsed);
     const reply = await getAiEnhancedReply(parsed, properties, rawMessage);
 
-    let result = {
-      ok: true,
-      input: rawMessage,
-      parsed,
-      propertyCount: properties.length,
-      properties: properties.slice(0, 3),
-      reply
-    };
+    let result = { ok: true, input: rawMessage, parsed, propertyCount: properties.length, properties: properties.slice(0, 3), reply };
 
     if (phoneNumber && process.env.VAPI_API_KEY && process.env.VAPI_ASSISTANT_ID) {
       try {
@@ -147,62 +161,67 @@ app.post('/demo/voice-text', async (req, res) => {
   }
 });
 
-app.post('/webhook/whatsapp', async (req, res) => {
-  const text = req.body.Body || req.body.message || req.body.text || '';
-  const fromNumber = req.body.From || null;
+app.get('/webhook/whatsapp', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const { webhookVerifyToken } = getMetaConfig();
 
-  const parsed = extractRequestDetails(text);
-  const properties = findMatchingProperties(parsed);
-  const reply = await getAiEnhancedReply(parsed, properties, text);
-
-  if (fromNumber && twilioClient && process.env.TWILIO_WHATSAPP_NUMBER) {
-    const toNumber = fromNumber.startsWith('whatsapp:') ? fromNumber : `whatsapp:${fromNumber}`;
-    const sendNumber = process.env.TWILIO_WHATSAPP_NUMBER.startsWith('whatsapp:')
-      ? process.env.TWILIO_WHATSAPP_NUMBER
-      : `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
-
-    try {
-      await twilioClient.messages.create({
-        from: sendNumber,
-        to: toNumber,
-        body: reply.substring(0, 1500)
-      });
-    } catch (error) {
-      console.error('Twilio send failed:', error.message);
-    }
-
-    return res.status(200).send('<Response></Response>');
+  if (mode === 'subscribe' && token === webhookVerifyToken) {
+    return res.status(200).send(challenge);
   }
 
-  res.json({ ok: true, reply, parsed, propertyCount: properties.length });
+  return res.status(403).send('Forbidden');
+});
+
+app.post('/webhook/whatsapp', async (req, res) => {
+  try {
+    const entries = req.body?.entry || [];
+    let outgoingReply = null;
+    let senderNumber = null;
+
+    for (const entry of entries) {
+      const changes = entry?.changes || [];
+      for (const change of changes) {
+        const value = change?.value || {};
+        const messages = value?.messages || [];
+        for (const message of messages) {
+          const msgType = message?.type || 'text';
+          senderNumber = message?.from;
+
+          if (msgType === 'text') {
+            const text = message?.text?.body || '';
+            const parsed = extractRequestDetails(text);
+            const properties = findMatchingProperties(parsed);
+            const reply = await getAiEnhancedReply(parsed, properties, text);
+            outgoingReply = reply;
+
+            if (senderNumber) {
+              await sendMetaWhatsAppMessage(senderNumber, reply.substring(0, 1500));
+            }
+          }
+        }
+      }
+    }
+
+    return res.status(200).json({ ok: true, reply: outgoingReply || 'ok' });
+  } catch (error) {
+    console.error('Meta WhatsApp webhook error:', error.message);
+    return res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 app.post('/webhook/voice-note', uploadDisk.single('media'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ ok: false, error: 'No audio file' });
-  }
+  if (!req.file) return res.status(400).json({ ok: false, error: 'No audio file' });
 
   const audioPath = req.file.path;
-  const fromNumber = req.body.From || null;
+  const senderNumber = req.body.From || null;
 
   try {
-    const result = await processVoiceMessage(audioPath, fromNumber);
+    const result = await processVoiceMessage(audioPath, senderNumber);
 
-    if (fromNumber && twilioClient && process.env.TWILIO_WHATSAPP_NUMBER) {
-      const toNumber = fromNumber.startsWith('whatsapp:') ? fromNumber : `whatsapp:${fromNumber}`;
-      const sendNumber = process.env.TWILIO_WHATSAPP_NUMBER.startsWith('whatsapp:')
-        ? process.env.TWILIO_WHATSAPP_NUMBER
-        : `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
-
-      try {
-        await twilioClient.messages.create({
-          from: sendNumber,
-          to: toNumber,
-          body: result.reply.substring(0, 1500)
-        });
-      } catch (error) {
-        console.error('Twilio send failed:', error.message);
-      }
+    if (senderNumber) {
+      await sendMetaWhatsAppMessage(senderNumber.replace(/^whatsapp:/, ''), result.reply.substring(0, 1500));
     }
 
     res.json(result);
@@ -210,46 +229,28 @@ app.post('/webhook/voice-note', uploadDisk.single('media'), async (req, res) => 
     console.error('Voice note processing error:', error);
     res.status(500).json({ ok: false, error: error.message });
   } finally {
-    if (fs.existsSync(audioPath)) {
-      fs.unlinkSync(audioPath);
-    }
+    if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
   }
 });
 
 app.post('/webhook/vapi', (req, res) => {
   const event = req.body?.type || req.body?.event || '';
-
   console.log('Vapi webhook received:', event);
-
-  if (event === 'call.started') {
-    console.log('Vapi call started:', req.body);
-  } else if (event === 'call.ended') {
-    console.log('Vapi call ended:', req.body);
-  } else if (event === 'transcript') {
-    console.log('Vapi transcript:', req.body);
-  }
-
+  if (event === 'call.started') console.log('Vapi call started:', req.body);
+  else if (event === 'call.ended') console.log('Vapi call ended:', req.body);
+  else if (event === 'transcript') console.log('Vapi transcript:', req.body);
   res.json({ ok: true, received: event });
 });
 
 app.get('/demo/tts', async (req, res) => {
   const { text } = req.query;
+  if (!text) return res.status(400).json({ ok: false, error: 'No text provided' });
 
-  if (!text) {
-    return res.status(400).json({ ok: false, error: 'No text provided' });
-  }
-
-  if (!process.env.ELEVENLABS_API_KEY) {
-    return res.status(400).json({ ok: false, error: 'ElevenLabs not configured' });
-  }
+  if (!process.env.ELEVENLABS_API_KEY) return res.status(400).json({ ok: false, error: 'ElevenLabs not configured' });
 
   try {
     const audioBuffer = await voiceAgent.generateSpeech(text);
-
-    if (!audioBuffer) {
-      return res.status(500).json({ ok: false, error: 'TTS generation failed' });
-    }
-
+    if (!audioBuffer) return res.status(500).json({ ok: false, error: 'TTS generation failed' });
     res.set('Content-Type', 'audio/mpeg');
     res.send(audioBuffer);
   } catch (error) {
@@ -260,11 +261,7 @@ app.get('/demo/tts', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n✅ Real estate WhatsApp voice demo running on http://localhost:${PORT}`);
-  console.log(`\n📊 Config: ${JSON.stringify({
-    twilio: !!twilioClient,
-    vapi: !!process.env.VAPI_API_KEY,
-    elevenlabs: !!process.env.ELEVENLABS_API_KEY,
-    openai: !!process.env.OPENAI_API_KEY
-  })}`);
+  console.log(`\n📊 Config: ${JSON.stringify({ twilio: !!twilioClient, metaWhatsApp: !!process.env.WHATSAPP_TOKEN && !!process.env.WHATSAPP_PHONE_NUMBER_ID, vapi: !!process.env.VAPI_API_KEY, elevenlabs: !!process.env.ELEVENLABS_API_KEY, openai: !!process.env.OPENAI_API_KEY })}`);
   console.log(`\n🔗 Health check: http://localhost:${PORT}/health`);
+  console.log(`\n🖥️ Dashboard: http://localhost:${PORT}/`);
 });
